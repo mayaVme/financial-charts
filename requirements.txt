@@ -1,0 +1,6 @@
+pandas>=2.0
+numpy>=1.24
+PyYAML>=6.0
+yfinance>=0.2.40     # free data for backtests / paper trading
+kiteconnect>=5.0     # Zerodha live trading
+pytest>=7            # tests

@@ -1,0 +1,63 @@
+# Copy to config.yaml and edit. Every key is optional; defaults shown.
+
+mode: paper            # paper | live  (live also needs --i-accept-the-risk)
+broker: zerodha
+data_source: yfinance  # paper mode prices: yfinance (free, may lag) | kite (needs Kite credentials)
+
+symbols: [RELIANCE, INFY, HDFCBANK]   # NSE cash-market symbols, liquid large caps recommended
+interval_minutes: 5
+lookback_candles: 100
+poll_seconds: 15
+log_dir: logs
+
+strategy:
+  name: ema_rsi
+  fast_ema: 9
+  slow_ema: 21
+  rsi_period: 14
+  rsi_buy_min: 50
+  rsi_buy_max: 70
+  rsi_sell_min: 30
+  rsi_sell_max: 50
+  atr_period: 14
+  atr_stop_mult: 1.5   # stop = 1.5 x ATR from entry
+  reward_risk: 2.0     # target = 2 x stop distance
+  allow_short: false   # intraday shorting (MIS) on bearish crossovers
+
+risk:
+  capital: 100000            # rupees the bot may use
+  risk_per_trade_pct: 1.0    # loss if a stop is hit, as % of capital
+  max_position_value_pct: 20 # cap on any single position's value
+  max_open_positions: 3
+  max_daily_loss_pct: 2.0    # kill switch: square off everything and stop for the day
+  max_trades_per_day: 10
+  max_orders_per_second: 5   # must stay under SEBI's 10 OPS retail threshold
+
+session:                     # IST
+  market_open: "09:15"
+  market_close: "15:30"
+  entry_start: "09:30"
+  no_new_entries_after: "15:00"
+  square_off_at: "15:12"
+  # Fill in from https://www.nseindia.com/resources/exchange-communication-holidays
+  holidays: []
+
+execution:
+  exchange: NSE
+  product: MIS
+  limit_buffer_pct: 0.3       # marketable limit orders, not raw market orders
+  stop_limit_buffer_pct: 1.0
+  tick_size: 0.05
+  fill_timeout_seconds: 20
+  order_tag: algobot
+  algo_id: ""                 # set if your broker gives you an exchange algo ID
+
+costs:                        # approximate intraday equity charges; used for P&L and backtests
+  brokerage_pct: 0.03
+  brokerage_cap: 20
+  stt_sell_pct: 0.025
+  exchange_txn_pct: 0.00297
+  sebi_pct: 0.0001
+  stamp_buy_pct: 0.003
+  gst_pct: 18
+  slippage_pct: 0.05
