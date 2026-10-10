@@ -49,8 +49,8 @@ def _unwrap(resp: dict, what: str):
     return resp.get("data")
 
 
-def load_security_ids(exchange: str = "NSE", cache_dir: str | Path = "logs", max_age_hours: float = 20) -> dict[str, str]:
-    """Map trading symbol -> Dhan security ID for cash-market equities, from the scrip master."""
+def scrip_master(cache_dir: str | Path = "logs", max_age_hours: float = 20) -> pd.DataFrame:
+    """Dhan's instrument list (all segments), downloaded at most once a day."""
     cache = Path(cache_dir) / "dhan-scrip-master.csv"
     if not cache.exists() or time.time() - cache.stat().st_mtime > max_age_hours * 3600:
         import requests
@@ -60,7 +60,12 @@ def load_security_ids(exchange: str = "NSE", cache_dir: str | Path = "logs", max
         r.raise_for_status()
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_bytes(r.content)
-    df = pd.read_csv(cache, low_memory=False, dtype=str)
+    return pd.read_csv(cache, low_memory=False, dtype=str)
+
+
+def load_security_ids(exchange: str = "NSE", cache_dir: str | Path = "logs", max_age_hours: float = 20) -> dict[str, str]:
+    """Map trading symbol -> Dhan security ID for cash-market equities, from the scrip master."""
+    df = scrip_master(cache_dir, max_age_hours)
     df = df[(df["SEM_EXM_EXCH_ID"] == exchange) & (df["SEM_SEGMENT"] == "E")]
     if "SEM_SERIES" in df.columns:
         df = df[df["SEM_SERIES"].isin(["EQ", "BE"])]
@@ -85,6 +90,9 @@ class DhanBroker(Broker):
         self.tag = tag[:25]
         self._cache_dir = cache_dir
         self._ids = {k.upper(): str(v) for k, v in (security_ids or {}).items()}
+        # Per-symbol segment/instrument for non-equity contracts (futures, options, indices).
+        self._segment_of: dict[str, str] = {}
+        self._instrument_of: dict[str, str] = {}
         self._master: dict[str, str] | None = None
         # Dhan's market quote API allows ~1 request/second.
         self._min_quote_interval = min_quote_interval
@@ -103,6 +111,16 @@ class DhanBroker(Broker):
         return cls(dhanhq(DhanContext(client_id, token)), **kw)
 
     # ------------------------------------------------------------------ instruments
+    def register(self, symbol: str, security_id: str | int, segment: str, instrument: str) -> None:
+        """Teach the broker a contract, e.g. register("BANKNIFTY-Oct2026-FUT", 51700, "NSE_FNO", "FUTIDX")."""
+        symbol = symbol.upper()
+        self._ids[symbol] = str(security_id)
+        self._segment_of[symbol] = segment
+        self._instrument_of[symbol] = instrument
+
+    def segment_of(self, symbol: str) -> str:
+        return self._segment_of.get(symbol.upper(), self.segment)
+
     def security_id(self, symbol: str) -> str:
         symbol = symbol.upper()
         if symbol in self._ids:
@@ -122,14 +140,21 @@ class DhanBroker(Broker):
         wait = self._min_quote_interval - (time.monotonic() - self._last_quote)
         if wait > 0:
             time.sleep(wait)
-        ids = {self.security_id(s): s for s in symbols}
-        data = _unwrap(self.client.ticker_data({self.segment: [int(i) for i in ids]}), "LTP")
+        by_segment: dict[str, dict[str, str]] = {}
+        for s in symbols:
+            by_segment.setdefault(self.segment_of(s), {})[self.security_id(s)] = s
+        request = {seg: [int(i) for i in ids] for seg, ids in by_segment.items()}
+        data = _unwrap(self.client.ticker_data(request), "LTP")
         self._last_quote = time.monotonic()
         # The v2 payload is {"data": {"NSE_EQ": {"1594": {"last_price": ...}}}, "status": "success"}.
         if isinstance(data, dict) and "data" in data:
             data = data["data"]
-        quotes = (data or {}).get(self.segment, {})
-        return {ids[str(sid)]: float(q["last_price"]) for sid, q in quotes.items() if str(sid) in ids}
+        out = {}
+        for seg, ids in by_segment.items():
+            for sid, q in (data or {}).get(seg, {}).items():
+                if str(sid) in ids:
+                    out[ids[str(sid)]] = float(q["last_price"])
+        return out
 
     def candles(self, symbol: str, interval_minutes: int, count: int) -> pd.DataFrame:
         base = _BASE_INTERVAL[interval_minutes]
@@ -137,7 +162,7 @@ class DhanBroker(Broker):
         days = min(89, max(5, int(count * interval_minutes / 375 * 1.6) + 4))
         data = _unwrap(
             self.client.intraday_minute_data(
-                self.security_id(symbol), self.segment, "EQUITY",
+                self.security_id(symbol), self.segment_of(symbol), self._instrument_of.get(symbol.upper(), "EQUITY"),
                 (to_dt - timedelta(days=days)).strftime("%Y-%m-%d"), to_dt.strftime("%Y-%m-%d"), interval=base,
             ),
             "historical data",
@@ -153,7 +178,7 @@ class DhanBroker(Broker):
         self._tag_seq += 1
         resp = self.client.place_order(
             security_id=self.security_id(symbol),
-            exchange_segment=self.segment,
+            exchange_segment=self.segment_of(symbol),
             transaction_type="BUY" if side is Side.BUY else "SELL",
             quantity=int(qty),
             order_type="STOP_LOSS" if order_type is OrderType.SL else "LIMIT",
@@ -203,8 +228,9 @@ class DhanBroker(Broker):
 
     def net_positions(self) -> dict[str, int]:
         data = _unwrap(self.client.get_positions(), "positions") or []
+        segments = {self.segment, *self._segment_of.values()}
         out = {}
         for p in data:
-            if p.get("exchangeSegment") == self.segment and p.get("productType") == self.product and int(p.get("netQty") or 0):
+            if p.get("exchangeSegment") in segments and p.get("productType") == self.product and int(p.get("netQty") or 0):
                 out[str(p["tradingSymbol"]).upper()] = int(p["netQty"])
         return out

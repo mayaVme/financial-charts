@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .brokers.base import Broker, OrderStatus, OrderType, Side
+from .brokers.base import Broker, MarketData, OrderStatus, OrderType, Side
 from .config import Config
 from .market_hours import IST, MarketCalendar, last_closed_candle_end, now_ist
 from .risk import RateLimiter, RiskManager, round_to_tick, trade_costs
@@ -45,8 +45,12 @@ class Position:
 
 
 class TradingEngine:
-    def __init__(self, cfg: Config, broker: Broker, strategy: Strategy, clock=now_ist, sleep=_time.sleep):
+    def __init__(self, cfg: Config, broker: Broker, strategy: Strategy, clock=now_ist, sleep=_time.sleep,
+                 market_data: MarketData | None = None):
         self.cfg, self.broker, self.strategy = cfg, broker, strategy
+        # Prices and candles can come from somewhere other than the order-routing broker (e.g. a tick feed).
+        self.market_data = market_data or broker
+        self.costs = cfg.costs
         self.clock, self.sleep = clock, sleep
         self.calendar = MarketCalendar(cfg.session)
         self.risk = RiskManager(cfg.risk)
@@ -57,6 +61,7 @@ class TradingEngine:
         self._last_candle_end: datetime | None = None
         self._squared_off = False
         self._reported = False
+        self.closed_trades: list[dict] = []
         self.journal = Path(cfg.log_dir) / "trades.csv"
         self.journal.parent.mkdir(parents=True, exist_ok=True)
 
@@ -100,7 +105,7 @@ class TradingEngine:
             self._new_day(now)
 
         self._sync_stop_orders()
-        prices = self.broker.ltp(list(self.positions)) if self.positions else {}
+        prices = self.market_data.ltp(list(self.positions)) if self.positions else {}
         self._check_targets(prices)
 
         unrealized = sum(p.pnl(prices[s]) for s, p in self.positions.items() if s in prices)
@@ -128,7 +133,7 @@ class TradingEngine:
 
     # ------------------------------------------------------------------ signals
     def _evaluate(self, sym: str, now: datetime) -> None:
-        df = self.broker.candles(sym, self.cfg.interval_minutes, self.cfg.lookback_candles + 1)
+        df = self.market_data.candles(sym, self.cfg.interval_minutes, self.cfg.lookback_candles + 1)
         if df is None or df.empty:
             log.warning("No candles for %s", sym)
             return
@@ -180,8 +185,8 @@ class TradingEngine:
         if not ok:
             log.info("%s: entry blocked (%s)", sym, why)
             return
-        price = self.broker.ltp([sym]).get(sym, last_close)
-        qty = self.risk.position_size(price, sig.stop_distance, self.broker.available_cash())
+        price = self.market_data.ltp([sym]).get(sym, last_close)
+        qty = self.size_position(sym, price, sig.stop_distance)
         if qty <= 0:
             log.info("%s: position size is 0 (price %.2f, stop %.2f)", sym, price, sig.stop_distance)
             return
@@ -208,11 +213,14 @@ class TradingEngine:
         self.positions[sym] = Position(sym, direction, filled, avg, stop, target, stop_id, now)
         log.info("OPEN %s %s x%d @ %.2f | stop %.2f | target %.2f | %s", "LONG" if direction > 0 else "SHORT", sym, filled, avg, stop, target, sig.reason)
 
+    def size_position(self, sym: str, price: float, stop_distance: float) -> int:
+        return self.risk.position_size(price, stop_distance, self.broker.available_cash())
+
     def _market_exit(self, sym: str, side: Side, qty: int, ref_price: float) -> tuple[int, float]:
         """Marketable-limit exit with widening buffer; returns (filled_qty, avg_price)."""
         remaining, value = qty, 0.0
         for attempt in range(4):
-            px = self.broker.ltp([sym]).get(sym, ref_price)
+            px = self.market_data.ltp([sym]).get(sym, ref_price)
             buffer = self.cfg.execution.limit_buffer_pct * (2**attempt)
             oid = self._place(sym, side, remaining, OrderType.LIMIT, self._limit_price(px, side, buffer))
             filled, avg, _ = self._wait_fill(oid)
@@ -271,12 +279,15 @@ class TradingEngine:
         qty = qty or pos.qty
         gross = (exit_price - pos.entry_price) * qty * pos.direction
         buy_px, sell_px = (pos.entry_price, exit_price) if pos.direction > 0 else (exit_price, pos.entry_price)
-        costs = trade_costs(buy_px * qty, sell_px * qty, self.cfg.costs)
+        costs = trade_costs(buy_px * qty, sell_px * qty, self.costs)
         net = gross - costs
         self.risk.on_trade_closed(net)
         if qty >= pos.qty:
             self.positions.pop(pos.symbol, None)
         log.info("CLOSE %s x%d @ %.2f (%s) | net P&L %.2f | day %.2f", pos.symbol, qty, exit_price, reason, net, self.risk.day.realized_pnl)
+        self.closed_trades.append(dict(symbol=pos.symbol, direction=pos.direction, qty=qty, entry_time=pos.opened_at, entry=pos.entry_price,
+                                       exit_time=self.clock(), exit=exit_price, reason=reason, gross=gross, costs=costs, net=net))
+        self.on_position_closed(pos, net, reason)
         new = not self.journal.exists()
         with self.journal.open("a", newline="") as f:
             w = csv.writer(f)
@@ -284,6 +295,9 @@ class TradingEngine:
                 w.writerow(["mode", "symbol", "direction", "qty", "entry_time", "entry", "exit_time", "exit", "reason", "gross", "costs", "net"])
             w.writerow([self.cfg.mode, pos.symbol, "LONG" if pos.direction > 0 else "SHORT", qty, pos.opened_at.isoformat(), pos.entry_price,
                         self.clock().isoformat(), exit_price, reason, round(gross, 2), round(costs, 2), round(net, 2)])
+
+    def on_position_closed(self, pos: Position, net: float, reason: str) -> None:
+        """Hook for subclasses."""
 
     def _new_day(self, now: datetime) -> None:
         self._day = now.date()

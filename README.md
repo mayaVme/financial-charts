@@ -112,6 +112,81 @@ SEBI's retail algo-trading framework (circular of Feb 2025, phased in by brokers
 Brokers' implementations and deadlines differ, so check your broker's current requirements before
 going live.
 
+## BankNifty order-flow bot (Dhan)
+
+A separate intraday bot for BankNifty. It reads order flow from the current-month BankNifty
+**future** (the index itself has no volume). It then trades either **ATM options** (the
+default: buy a CE on bullish signals, a PE on bearish ones) or the **future** itself.
+
+```bash
+cp banknifty.example.yaml banknifty.yaml
+python -m bot -c banknifty.yaml banknifty paper                       # live Dhan data, simulated fills
+python -m bot -c banknifty.yaml banknifty replay --ticks data/ticks/*.csv   # backtest on recorded ticks
+python -m bot -c banknifty.yaml banknifty live --i-accept-the-risk    # real money (needs mode: live)
+```
+
+Start it each morning before 09:15 with a fresh Dhan token. It trades one session and exits
+after the close.
+
+### How a decision is made
+
+Ticks from Dhan's WebSocket are built into **5-minute footprint candles**. Each candle records
+volume traded at the bid and at the ask for every 5-point price row. On every closed candle,
+14 factors each score from -1 (bearish) to +1 (bullish), and the confluence score is their
+weighted average:
+
+| Group | Factors |
+|---|---|
+| Order flow | bar delta, CVD slope, stacked diagonal imbalances (300%, 3+ rows), absorption at the bar's extremes, delta divergence vs new highs/lows, close vs footprint POC, 5-level order-book imbalance, OI build-up/unwinding |
+| Technicals | session VWAP, EMA 9/21, Supertrend (10, 3), CPR from the previous day, 15-minute opening-range breakout, RSI |
+
+How the score is used:
+
+- **Entry:** the bot enters when |score| ≥ 0.45 and all of these hold:
+  - the required filters agree (VWAP by default);
+  - the candle has live order-flow data;
+  - ATR shows the market is actually moving;
+  - the stop fits within 40–150 points.
+- **Stop:** beyond the signal candle's extreme plus 0.25 × ATR, placed at Dhan as a stop-loss
+  order.
+- **Target:** 2R. The stop moves to breakeven at +1R.
+- **Exit on reversal:** an opposite score of 0.35 or more closes the trade.
+- **Options mode:** stops and targets are converted from underlying points to premium points
+  using delta (0.5 by default). The premium stop is capped at 35%.
+- **Guards:**
+  - 1 position at a time and 4 trades a day;
+  - a 15-minute cooldown after a loss;
+  - no entries while the tick feed is stale;
+  - the 2% daily-loss kill switch;
+  - square-off at 15:12.
+
+Every candle's factor scores are written to `logs/banknifty-signals.csv`, and every trade to
+`logs/banknifty-trades.csv`, so you can see exactly why the bot did what it did. Weights,
+thresholds and filters are all set in `banknifty.yaml`.
+
+### Limits you should know about
+
+- **No historical order-flow data:** Dhan doesn't sell historical tick data, so the footprint
+  can't be backtested on past years. The bot **records every tick** to `data/ticks/` while it
+  runs (paper or live), and `banknifty replay` backtests on those recordings using the exact
+  live engine. Paper trade for several weeks first; that builds your own tick history. Vendor
+  tick data converted to the same CSV columns also works.
+- **Footprint is approximate:** Dhan's feed sends snapshots, not every individual trade. The
+  bot estimates traded volume from changes in cumulative volume, and classifies it as buying
+  or selling against the previous best bid/ask. It's a good approximation, but not
+  exchange-grade tick-by-tick data.
+- **Starting mid-session:** indicators are warmed up from Dhan's 5-minute futures history, but
+  order-flow factors only score candles built from live ticks.
+- **Capital:** one BankNifty lot (lot size is read from Dhan's contract list) needs roughly
+  ₹2.5L margin as a future. Options need only the premium, which is why options are the
+  default. If the risk budget can't cover one lot at the planned stop, the bot skips the trade
+  and logs why.
+- **Charges:** the STT and exchange charges in the example config are deliberately
+  conservative. Check them against your Dhan contract note.
+- **No edge is proven:** none of these factors has a verified edge on BankNifty. The default
+  weights and thresholds are reasoned starting points, not optimised values. Validate them on
+  your own recorded data before trusting them with money.
+
 ## Project layout
 
 ```
@@ -126,6 +201,7 @@ bot/
   strategies/        Strategy interface + EMA/RSI strategy
   brokers/           Broker interface, PaperBroker, DhanBroker, ZerodhaBroker
   data/feeds.py      Yahoo Finance / broker / CSV data
+  banknifty/         BankNifty order-flow bot: ticks, footprint, confluence strategy, engine, replay
 tests/               pytest suite (python -m pytest)
 ```
 

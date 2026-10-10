@@ -1,0 +1,105 @@
+# BankNifty order-flow bot (Dhan). Copy to banknifty.yaml and run:
+#   python -m bot -c banknifty.yaml banknifty paper
+# Keys not listed here use the defaults in bot/config.py.
+
+mode: paper              # paper | live (live also needs --i-accept-the-risk)
+broker: dhan
+interval_minutes: 5      # footprint candle size
+lookback_candles: 200    # ~2.5 sessions of 5m candles for VWAP/CPR/EMA context
+log_dir: logs
+
+banknifty:
+  instrument: options          # options: buy ATM CE on bullish / PE on bearish signals
+                               # futures: trade the future long/short (~2.5L margin per lot)
+  skip_expiry_day_options: true
+  strike_offset: 0             # 0 ATM, 1 = one strike OTM
+  strikes_to_subscribe: 8
+  option_delta: 0.5            # underlying stop/target points x delta = premium points
+  max_option_stop_pct: 35
+  max_lots: 2
+  futures_margin_per_lot: 250000
+
+  footprint_row_size: 5        # points per footprint row
+  imbalance_ratio: 3.0         # 300% diagonal imbalance
+  imbalance_min_qty: 100
+  stacked_levels: 3
+  absorption_share: 0.30
+  divergence_lookback: 6
+  cvd_slope_bars: 5
+  opening_range_minutes: 15
+
+  # Confluence: each factor scores -1..+1; score = weighted average. Set a weight to 0 to ignore it.
+  weights:
+    vwap: 1.0
+    ema_trend: 0.75
+    supertrend: 0.75
+    cpr: 0.5
+    opening_range: 0.75
+    rsi: 0.5
+    bar_delta: 1.25
+    cvd_slope: 1.0
+    stacked_imbalance: 1.25
+    absorption: 1.0
+    delta_divergence: 1.0
+    poc_acceptance: 0.5
+    book_imbalance: 0.75
+    oi_buildup: 0.75
+  entry_threshold: 0.45        # |score| needed to enter
+  exit_threshold: 0.35         # opposite score that exits an open trade
+  required_filters: [vwap]     # factors that must agree with the trade direction
+  require_orderflow: true      # never enter on a candle without live tick data
+  min_atr_points: 15           # skip dead, choppy markets
+  stop_buffer_atr: 0.25        # stop = beyond the signal candle's extreme + 0.25 x ATR
+  min_stop_points: 40
+  max_stop_points: 150         # skip trades needing a wider stop
+  reward_risk: 2.0
+  breakeven_at_r: 1.0          # move stop to entry at +1R (0 disables)
+  cooldown_minutes_after_loss: 15
+  stale_feed_seconds: 30
+
+  record_ticks: true           # save ticks to data/ticks/ for replay backtests
+  tick_dir: data/ticks
+
+risk:
+  capital: 300000
+  risk_per_trade_pct: 1.0      # 3,000 rupees at risk per trade
+  max_position_value_pct: 20   # options: max premium outlay per trade
+  max_open_positions: 1
+  max_daily_loss_pct: 2.0      # kill switch
+  max_trades_per_day: 4        # order-flow signals cluster; avoid overtrading
+  max_orders_per_second: 5
+
+session:
+  entry_start: "09:30"         # after the opening range
+  no_new_entries_after: "14:45"
+  square_off_at: "15:12"       # before the broker's ~15:20 F&O auto square-off
+  holidays: []                 # add NSE trading holidays
+
+execution:
+  exchange: NSE
+  product: MIS                 # sent to Dhan as INTRADAY
+  limit_buffer_pct: 0.5
+  stop_limit_buffer_pct: 3.0   # options can gap; wide limit on the stop-loss order
+  tick_size: 0.05
+  fill_timeout_seconds: 15
+  order_tag: bnflow
+
+# Charges change with budgets and exchange circulars. Verify against your Dhan contract note.
+costs:                         # futures (on turnover)
+  brokerage_pct: 0.03
+  brokerage_cap: 20
+  stt_sell_pct: 0.05
+  exchange_txn_pct: 0.00173
+  sebi_pct: 0.0001
+  stamp_buy_pct: 0.002
+  gst_pct: 18
+  slippage_pct: 0.01
+option_costs:                  # options (on premium turnover)
+  brokerage_pct: 100           # effectively a flat 20 rupees per order
+  brokerage_cap: 20
+  stt_sell_pct: 0.15
+  exchange_txn_pct: 0.03503
+  sebi_pct: 0.0001
+  stamp_buy_pct: 0.003
+  gst_pct: 18
+  slippage_pct: 0.3

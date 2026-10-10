@@ -78,6 +78,80 @@ class CostConfig:
     slippage_pct: float = 0.05
 
 
+DEFAULT_FACTOR_WEIGHTS = {
+    # technical context
+    "vwap": 1.0,
+    "ema_trend": 0.75,
+    "supertrend": 0.75,
+    "cpr": 0.5,
+    "opening_range": 0.75,
+    "rsi": 0.5,
+    # order flow (from the futures tick stream)
+    "bar_delta": 1.25,
+    "cvd_slope": 1.0,
+    "stacked_imbalance": 1.25,
+    "absorption": 1.0,
+    "delta_divergence": 1.0,
+    "poc_acceptance": 0.5,
+    "book_imbalance": 0.75,
+    "oi_buildup": 0.75,
+}
+
+
+@dataclass
+class BankNiftyConfig:
+    instrument: str = "options"  # options (buy ATM CE/PE) | futures
+    underlying: str = "BANKNIFTY"
+    index_security_id: int = 25  # Dhan IDX_I id for the Nifty Bank index
+    skip_expiry_day_options: bool = True  # on expiry day trade the next expiry instead
+    strike_offset: int = 0  # 0 = ATM, 1 = one strike OTM, -1 = one strike ITM
+    strikes_to_subscribe: int = 8  # strikes either side of ATM to stream
+    option_delta: float = 0.5  # converts underlying stop/target points into premium points
+    max_option_stop_pct: float = 35.0  # never risk more than this % of the premium
+    max_lots: int = 2
+    futures_margin_per_lot: float = 250_000.0
+    # footprint
+    footprint_row_size: float = 5.0  # price points per footprint row
+    imbalance_ratio: float = 3.0
+    imbalance_min_qty: int = 100
+    stacked_levels: int = 3
+    absorption_share: float = 0.30
+    divergence_lookback: int = 6
+    cvd_slope_bars: int = 5
+    opening_range_minutes: int = 15
+    # decision
+    weights: dict = field(default_factory=lambda: dict(DEFAULT_FACTOR_WEIGHTS))
+    entry_threshold: float = 0.45
+    exit_threshold: float = 0.35
+    required_filters: list = field(default_factory=lambda: ["vwap"])
+    require_orderflow: bool = True
+    min_atr_points: float = 15.0
+    stop_buffer_atr: float = 0.25
+    min_stop_points: float = 40.0
+    max_stop_points: float = 150.0
+    reward_risk: float = 2.0
+    breakeven_at_r: float = 1.0
+    cooldown_minutes_after_loss: int = 15
+    stale_feed_seconds: int = 30
+    # data
+    record_ticks: bool = True
+    tick_dir: str = "data/ticks"
+
+    def validate(self) -> None:
+        if self.instrument not in ("options", "futures"):
+            raise ValueError("banknifty.instrument must be 'options' or 'futures'")
+        unknown = set(self.weights) - set(DEFAULT_FACTOR_WEIGHTS)
+        if unknown:
+            raise ValueError(f"Unknown banknifty.weights factors: {sorted(unknown)}")
+        bad = set(self.required_filters) - set(DEFAULT_FACTOR_WEIGHTS)
+        if bad:
+            raise ValueError(f"Unknown banknifty.required_filters: {sorted(bad)}")
+        if not 0 < self.exit_threshold <= self.entry_threshold <= 1:
+            raise ValueError("need 0 < exit_threshold <= entry_threshold <= 1")
+        if self.min_stop_points > self.max_stop_points:
+            raise ValueError("min_stop_points must be <= max_stop_points")
+
+
 @dataclass
 class Config:
     mode: str = "paper"  # paper | live
@@ -95,6 +169,9 @@ class Config:
     session: SessionConfig = field(default_factory=SessionConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     costs: CostConfig = field(default_factory=CostConfig)
+    # BankNifty orderflow bot only. `costs` applies to futures, `option_costs` to option premiums.
+    banknifty: BankNiftyConfig = field(default_factory=BankNiftyConfig)
+    option_costs: CostConfig = field(default_factory=CostConfig)
 
     def validate(self) -> None:
         if self.mode not in ("paper", "live"):
@@ -121,6 +198,7 @@ class Config:
         ss = self.session
         if not (ss.market_open <= ss.entry_start < ss.no_new_entries_after < ss.square_off_at < ss.market_close):
             raise ValueError("session times must satisfy open <= entry_start < no_new_entries_after < square_off_at < close")
+        self.banknifty.validate()
 
 
 def _parse_time(v) -> time:
@@ -163,7 +241,12 @@ def load_config(path: str | os.PathLike | None) -> Config:
         session=_build(SessionConfig, session_raw),
         execution=_build(ExecutionConfig, raw.pop("execution", None)),
         costs=_build(CostConfig, raw.pop("costs", None)),
+        option_costs=_build(CostConfig, raw.pop("option_costs", None)),
     )
+    bn_raw = dict(raw.pop("banknifty", None) or {})
+    if "weights" in bn_raw:
+        bn_raw["weights"] = {**DEFAULT_FACTOR_WEIGHTS, **(bn_raw["weights"] or {})}
+    cfg.banknifty = _build(BankNiftyConfig, bn_raw)
     for k, v in raw.items():
         if k not in Config.__dataclass_fields__:
             raise ValueError(f"Unknown config key: {k}")

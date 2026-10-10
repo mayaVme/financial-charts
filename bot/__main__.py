@@ -104,6 +104,37 @@ def cmd_run(args, cfg, live: bool) -> None:
             print("Positions are still open with stop orders at the broker. Square them off manually if needed.")
 
 
+def cmd_banknifty(args, cfg) -> None:
+    from .banknifty import runner
+
+    log = logging.getLogger("bot.banknifty")
+    if args.action == "replay":
+        cfg.mode = "paper"
+        engine = runner.replay(cfg, args.ticks or [], args.contracts)
+        print(json.dumps(runner.summarize(engine.closed_trades, cfg.risk.capital), indent=2, default=str))
+        if args.trades_out:
+            import pandas as pd
+
+            pd.DataFrame(engine.closed_trades).to_csv(args.trades_out, index=False)
+            print(f"Trades written to {args.trades_out}")
+        return
+    live = args.action == "live"
+    if live and (cfg.mode != "live" or not args.i_accept_the_risk):
+        raise SystemExit("Refusing to trade real money. Set `mode: live` in the config AND pass --i-accept-the-risk.")
+    if not live:
+        cfg.mode = "paper"
+    if cfg.broker != "dhan":
+        raise SystemExit("The BankNifty order-flow bot needs Dhan's market feed (broker: dhan).")
+    if live:
+        print("*** LIVE BANKNIFTY TRADING WITH REAL MONEY via DHAN. Ctrl+C to stop (broker-side stops stay in place). ***")
+    try:
+        engine = runner.run_session(cfg, live)
+    except KeyboardInterrupt:
+        log.warning("Interrupted. Any open position still has its stop order at the broker.")
+        return
+    print(json.dumps(runner.summarize(engine.closed_trades, cfg.risk.capital), indent=2, default=str))
+
+
 def cmd_login(args, cfg) -> None:
     if cfg.broker == "dhan":
         print(
@@ -140,6 +171,12 @@ def main(argv=None) -> None:
     sub.add_parser("paper", help="Paper trade with live prices, simulated orders")
     lv = sub.add_parser("live", help="Trade real money via your broker (Dhan or Zerodha)")
     lv.add_argument("--i-accept-the-risk", action="store_true")
+    bnp = sub.add_parser("banknifty", help="BankNifty order-flow bot (Dhan): paper | live | replay")
+    bnp.add_argument("action", choices=["paper", "live", "replay"])
+    bnp.add_argument("--ticks", nargs="+", help="replay: recorded tick CSVs (data/ticks/YYYY-MM-DD.csv)")
+    bnp.add_argument("--contracts", help="replay: contracts JSON (default: next to each tick file)")
+    bnp.add_argument("--trades-out", help="replay: write trades to this CSV")
+    bnp.add_argument("--i-accept-the-risk", action="store_true")
     lg = sub.add_parser("login", help="Get today's broker access token")
     lg.add_argument("--request-token")
 
@@ -154,6 +191,8 @@ def main(argv=None) -> None:
         cmd_run(args, cfg, live=False)
     elif args.cmd == "live":
         cmd_run(args, cfg, live=True)
+    elif args.cmd == "banknifty":
+        cmd_banknifty(args, cfg)
     elif args.cmd == "login":
         cmd_login(args, cfg)
 
