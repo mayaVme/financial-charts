@@ -121,7 +121,8 @@ default: buy a CE on bullish signals, a PE on bearish ones) or the **future** it
 ```bash
 cp banknifty.example.yaml banknifty.yaml
 python -m bot -c banknifty.yaml banknifty paper                       # live Dhan data, simulated fills
-python -m bot -c banknifty.yaml banknifty replay --ticks data/ticks/*.csv   # backtest on recorded ticks
+python -m bot -c banknifty.yaml banknifty backtest --csv futures_5m.csv     # technical half, on candles
+python -m bot -c banknifty.yaml banknifty replay --ticks data/ticks/*.csv   # full model, on recorded ticks
 python -m bot -c banknifty.yaml banknifty live --i-accept-the-risk    # real money (needs mode: live)
 ```
 
@@ -163,6 +164,39 @@ How the score is used:
 Every candle's factor scores are written to `logs/banknifty-signals.csv`, and every trade to
 `logs/banknifty-trades.csv`, so you can see exactly why the bot did what it did. Weights,
 thresholds and filters are all set in `banknifty.yaml`.
+
+### Backtest results (Jul 6 – Oct 9, 2026)
+
+The bot was tested on 68 sessions of real 5-minute BankNifty continuous-futures candles
+(5,196 bars from TradingView). Each data chunk was checked against the source's own bar count,
+total volume and high/low. Candles can't reproduce order flow, so **only the technical half of
+the model was tested**: VWAP, EMA, Supertrend, CPR, opening range and RSI. The entry rules,
+stops, breakeven, cooldown, kill switch and square-off were the same as live. Results are per
+1 lot (35), with 2 points of slippage per side and futures STT at 0.02%.
+
+| | Result |
+|---|---|
+| Trades / win rate | 229 / 21% |
+| Gross points (before costs) | **–2,105** (–1,189 even with zero slippage) |
+| Net per lot after charges | **–₹2.05L** (–₹3.23L with STT at 0.05%) |
+| Profit factor / max drawdown | 0.48 / –₹2.07L |
+| Every month | July, August, September and October all lost |
+| Random-direction control | strategy at the 29th percentile, so **no better than a coin flip** |
+| Parameter sweep | **0 of 48** threshold/R:R/breakeven/stop combinations profitable after costs |
+| Walk-forward | best settings on Jul–Aug lost –₹52k on Sep–Oct |
+| ATM options estimate (delta 0.5, no theta) | –₹83k per lot, and the real figure would be worse |
+
+**What this means:** the technical signals have no edge on BankNifty at this timeframe in this
+period. Round-trip costs of about 16–20 points per lot make any no-edge strategy lose steadily.
+The order-flow factors are still untested, because no historical tick data exists. Don't trade
+this live unless paper-traded tick recordings (`banknifty replay`) show a clear, cost-adjusted
+edge over many weeks.
+
+Rerun it on your own candles:
+
+```bash
+python -m bot -c banknifty.yaml banknifty backtest --csv BANKNIFTY_FUT_5m.csv --trades-out trades.csv
+```
 
 ### Limits you should know about
 

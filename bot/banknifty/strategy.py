@@ -124,27 +124,31 @@ class OrderflowConfluenceStrategy(Strategy):
 
     # ------------------------------------------------------------------ decision
     def on_candles(self, df: pd.DataFrame) -> Signal:
-        bn = self.bn
         if len(df) < self.min_candles():
             return Signal(Action.HOLD, reason="warming up")
         f = self.factors(df)
-        s = self.score(f)
-        self.last_factors, self.last_score = f, s
         last = df.iloc[-1]
         a = atr(df[["high", "low", "close"]].astype(float), 14).iloc[-1]
+        return self.decide(f, float(last.close), float(last.low), float(last.high), bool(last.get("has_flow", False)), float(a))
+
+    def decide(self, f: dict[str, float], close: float, low: float, high: float, has_flow: bool, a: float) -> Signal:
+        """Turn factor scores for the latest candle into an action (separate from `factors` so it can be re-run cheaply)."""
+        bn = self.bn
+        s = self.score(f)
+        self.last_factors, self.last_score = f, s
         top = ", ".join(f"{k} {v:+.1f}" for k, v in sorted(f.items(), key=lambda kv: -abs(kv[1] * bn.weights[kv[0]]))[:5] if v)
         reason = f"score {s:+.2f} [{top}]"
 
         if s >= bn.entry_threshold or s <= -bn.entry_threshold:
             d = 1 if s > 0 else -1
             blocked = [k for k in bn.required_filters if f.get(k, 0.0) * d <= 0]
-            if bn.require_orderflow and not bool(last.get("has_flow", False)):
+            if bn.require_orderflow and not has_flow:
                 blocked.append("no live order flow")
             if math.isnan(a) or a < bn.min_atr_points:
                 blocked.append(f"ATR {a:.0f} < {bn.min_atr_points:.0f}")
             if not blocked:
-                extreme = last.low if d > 0 else last.high
-                stop = abs(last.close - extreme) + bn.stop_buffer_atr * a
+                extreme = low if d > 0 else high
+                stop = abs(close - extreme) + bn.stop_buffer_atr * a
                 stop = max(stop, bn.min_stop_points)
                 if stop <= bn.max_stop_points:
                     return Signal(Action.BUY if d > 0 else Action.SHORT, stop, stop * bn.reward_risk, reason)

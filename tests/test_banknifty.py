@@ -247,3 +247,35 @@ def test_replay_end_to_end(sessions, tmp_path, instrument):
     s = summarize(trades, cfg.risk.capital)
     assert s["trades"] == len(trades) and s["total_costs"] > 0
     assert (tmp_path / "banknifty-signals.csv").exists()
+
+
+# ---------------------------------------------------------------- candle backtest
+def test_candle_backtest_rules():
+    from bot.banknifty.candle_backtest import SimParams, precompute_features, simulate, technical_only
+
+    cfg = technical_only(load_config("banknifty.example.yaml"))
+    assert cfg.banknifty.weights["bar_delta"] == 0 and not cfg.banknifty.require_orderflow
+    rng = np.random.default_rng(3)
+    idx, closes = [], []
+    price = 57000.0
+    for day in pd.bdate_range("2026-07-06", periods=6):
+        start = pd.Timestamp(day.date()).tz_localize(IST) + pd.Timedelta(hours=9, minutes=15)
+        for k in range(75):
+            idx.append(start + pd.Timedelta(minutes=5 * k))
+            price += 8 * np.sin(len(closes) / 12) + rng.normal(0, 15)
+            closes.append(price)
+    c = np.array(closes)
+    o = np.r_[c[0], c[:-1]]
+    df = pd.DataFrame({"open": o, "high": np.maximum(o, c) + 15, "low": np.minimum(o, c) - 15, "close": c, "volume": 1000.0},
+                      index=pd.DatetimeIndex(idx))
+    res = simulate(df, precompute_features(df, cfg), cfg, SimParams(lot_size=35, slippage_points=2))
+    tr = res.frame()
+    assert len(tr) > 0
+    s = cfg.session
+    assert all(s.entry_start <= t.time() < s.no_new_entries_after for t in tr.entry_time)
+    assert all(t.exit_time.date() == t.entry_time.date() for t in tr.itertuples())
+    assert tr.groupby("date").size().max() <= cfg.risk.max_trades_per_day
+    for t in tr.itertuples():  # entries fill at the next candle's open plus slippage
+        side = 1 if t.side == "LONG" else -1
+        assert t.entry == pytest.approx(df.loc[t.entry_time, "open"] + 2 * side, abs=0.01)
+    assert res.summary()["trades"] == len(tr)

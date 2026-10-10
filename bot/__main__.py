@@ -108,6 +108,22 @@ def cmd_banknifty(args, cfg) -> None:
     from .banknifty import runner
 
     log = logging.getLogger("bot.banknifty")
+    if args.action == "backtest":
+        from .banknifty.candle_backtest import SimParams, precompute_features, simulate, technical_only
+        from .data.feeds import load_csv, resample
+
+        if not args.csv:
+            raise SystemExit("banknifty backtest needs --csv with BankNifty futures OHLCV candles")
+        tcfg = technical_only(cfg)
+        df = resample(load_csv(args.csv), tcfg.interval_minutes)
+        print(f"Computing indicators for {len(df)} candles ({df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d})...")
+        res = simulate(df, precompute_features(df, tcfg), tcfg, SimParams(lot_size=args.lot_size, slippage_points=args.slippage))
+        print("Technical factors only (order flow needs tick data; use `banknifty replay` for that).")
+        print(json.dumps(res.summary(), indent=2, default=str))
+        if args.trades_out:
+            res.frame().to_csv(args.trades_out, index=False)
+            print(f"Trades written to {args.trades_out}")
+        return
     if args.action == "replay":
         cfg.mode = "paper"
         engine = runner.replay(cfg, args.ticks or [], args.contracts)
@@ -171,11 +187,14 @@ def main(argv=None) -> None:
     sub.add_parser("paper", help="Paper trade with live prices, simulated orders")
     lv = sub.add_parser("live", help="Trade real money via your broker (Dhan or Zerodha)")
     lv.add_argument("--i-accept-the-risk", action="store_true")
-    bnp = sub.add_parser("banknifty", help="BankNifty order-flow bot (Dhan): paper | live | replay")
-    bnp.add_argument("action", choices=["paper", "live", "replay"])
+    bnp = sub.add_parser("banknifty", help="BankNifty order-flow bot (Dhan): paper | live | replay | backtest")
+    bnp.add_argument("action", choices=["paper", "live", "replay", "backtest"])
+    bnp.add_argument("--csv", help="backtest: BankNifty futures OHLCV CSV")
+    bnp.add_argument("--lot-size", type=int, default=35, help="backtest: contract lot size")
+    bnp.add_argument("--slippage", type=float, default=2.0, help="backtest: slippage points per side")
     bnp.add_argument("--ticks", nargs="+", help="replay: recorded tick CSVs (data/ticks/YYYY-MM-DD.csv)")
     bnp.add_argument("--contracts", help="replay: contracts JSON (default: next to each tick file)")
-    bnp.add_argument("--trades-out", help="replay: write trades to this CSV")
+    bnp.add_argument("--trades-out", help="replay/backtest: write trades to this CSV")
     bnp.add_argument("--i-accept-the-risk", action="store_true")
     lg = sub.add_parser("login", help="Get today's broker access token")
     lg.add_argument("--request-token")
