@@ -2,7 +2,7 @@
 
 An automated intraday trading bot for Indian equities (NSE cash market). It ships with a
 backtester, a paper-trading mode that uses live prices with simulated orders, and live trading
-through **Zerodha Kite Connect**.
+through **Dhan** (the default) or **Zerodha Kite Connect**.
 
 > **Read this first.** Automated trading can lose money fast, and most retail intraday traders
 > lose money. The bundled strategy is a simple, well-known template. It is **not** a proven
@@ -38,7 +38,7 @@ through **Zerodha Kite Connect**.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml      # edit symbols, capital, risk, holidays
-cp .env.example .env                    # Kite credentials (only for kite data / live)
+cp .env.example .env                    # broker credentials (only for broker data / live)
 ```
 
 ## 1. Backtest
@@ -62,24 +62,41 @@ python -m bot paper
 ```
 
 This uses live prices and simulated fills. By default prices come from Yahoo Finance, which is
-free but can lag the exchange by a few minutes. For real-time prices, set `data_source: kite`
-(this needs Kite credentials and places no real orders). Leave it running through market hours;
+free but can lag the exchange by a few minutes. For real-time prices, set `data_source: broker`
+(this needs your Dhan credentials and places no real orders). Leave it running through market hours;
 it sleeps outside them.
 
-## 3. Live trading (Zerodha)
+## 3. Live trading (Dhan)
 
-1. Create a Kite Connect app at <https://developers.kite.trade>. The API is a paid
-   subscription. Put `KITE_API_KEY` and `KITE_API_SECRET` in `.env`.
-2. Every trading morning, generate an access token (tokens expire around 6 AM IST):
-   ```bash
-   python -m bot login     # follow the prompts, then put KITE_ACCESS_TOKEN in .env
-   ```
-3. Set `mode: live` in `config.yaml`, then start trading:
+1. In Dhan, open <https://web.dhan.co> → **My Profile → Access DhanHQ APIs**.
+   - Generate an **access token**. It is valid for 24 hours, so you'll need a new one each day.
+   - Note your **Client ID**.
+   - Register the **static IP** of the machine that will run the bot. Dhan rejects API orders
+     from any other IP.
+2. Put `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` in `.env`. Running `python -m bot login`
+   repeats these steps.
+3. Set `mode: live` in `config.yaml` (`broker: dhan` is already the default), then start trading:
    ```bash
    python -m bot live --i-accept-the-risk
    ```
 
-Run it on an always-on machine or a cloud VM with a stable connection, not a laptop that sleeps.
+How the bot talks to Dhan:
+- **Instrument IDs:** Dhan identifies stocks by security ID, not by symbol. The bot downloads
+  Dhan's scrip master once a day and looks the IDs up. If a symbol can't be found, pin its ID
+  under `dhan_security_ids` in the config.
+- **Order types:** intraday orders are sent with the `INTRADAY` product. Entries and exits are
+  `LIMIT` orders, and protective stops are `STOP_LOSS` (stop-limit) orders.
+- **Quote limit:** Dhan's quote API allows about one request per second, and the bot paces its
+  price checks to match.
+
+### Zerodha instead
+
+Set `broker: zerodha`. Put `KITE_API_KEY` and `KITE_API_SECRET` in `.env`, then run
+`python -m bot login` each morning to get `KITE_ACCESS_TOKEN`. Kite Connect is a paid
+subscription.
+
+Run it on an always-on machine or a cloud VM with a stable connection and a static IP, not a
+laptop that sleeps.
 
 ### Regulatory notes (India)
 
@@ -89,10 +106,10 @@ SEBI's retail algo-trading framework (circular of Feb 2025, phased in by brokers
 - API orders must come from a **static IP registered with your broker**.
 - Strategies that place more than 10 orders per second must be registered with the exchange.
   This bot is capped at 5 per second.
-- Orders are tagged as algo orders. If your broker issues an exchange algo ID, set
+- Orders are tagged as algo orders. With Zerodha, if you're issued an exchange algo ID, set
   `execution.algo_id`.
 
-Brokers' implementations and deadlines differ, so check Zerodha's current requirements before
+Brokers' implementations and deadlines differ, so check your broker's current requirements before
 going live.
 
 ## Project layout
@@ -107,8 +124,8 @@ bot/
   market_hours.py    IST session calendar
   indicators.py      EMA, RSI, ATR
   strategies/        Strategy interface + EMA/RSI strategy
-  brokers/           Broker interface, PaperBroker, ZerodhaBroker
-  data/feeds.py      Yahoo Finance / Kite / CSV data
+  brokers/           Broker interface, PaperBroker, DhanBroker, ZerodhaBroker
+  data/feeds.py      Yahoo Finance / broker / CSV data
 tests/               pytest suite (python -m pytest)
 ```
 
@@ -117,6 +134,6 @@ tests/               pytest suite (python -m pytest)
 - **Strategy:** subclass `Strategy` in `bot/strategies/`, return a `Signal` from
   `on_candles(df)`, and register it in `STRATEGIES`. The backtester and the live engine both
   pick it up.
-- **Broker** (Upstox, Angel One, Dhan, etc.): implement the `Broker` interface in
+- **Broker** (Upstox, Angel One, etc.): implement the `Broker` interface in
   `bot/brokers/base.py`: `ltp`, `candles`, `place_order`, `get_order`, `cancel_order`,
   `available_cash`, and `net_positions`.

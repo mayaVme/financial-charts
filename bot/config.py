@@ -81,13 +81,15 @@ class CostConfig:
 @dataclass
 class Config:
     mode: str = "paper"  # paper | live
-    broker: str = "zerodha"
-    data_source: str = "yfinance"  # used by paper mode when no broker credentials
+    broker: str = "dhan"  # dhan | zerodha
+    data_source: str = "yfinance"  # paper-mode prices: yfinance | broker (real-time via your broker's API)
     symbols: list[str] = field(default_factory=lambda: ["RELIANCE", "INFY", "HDFCBANK"])
     interval_minutes: int = 5
     lookback_candles: int = 100
     poll_seconds: int = 15
     log_dir: str = "logs"
+    # Optional symbol -> Dhan security ID overrides (otherwise looked up from Dhan's scrip master).
+    dhan_security_ids: dict[str, int] = field(default_factory=dict)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
@@ -97,6 +99,10 @@ class Config:
     def validate(self) -> None:
         if self.mode not in ("paper", "live"):
             raise ValueError(f"mode must be 'paper' or 'live', got {self.mode!r}")
+        if self.broker not in ("dhan", "zerodha"):
+            raise ValueError(f"broker must be 'dhan' or 'zerodha', got {self.broker!r}")
+        if self.data_source not in ("yfinance", "broker", "kite"):
+            raise ValueError("data_source must be 'yfinance' or 'broker'")
         if self.interval_minutes not in (1, 3, 5, 10, 15, 30, 60):
             raise ValueError("interval_minutes must be one of 1, 3, 5, 10, 15, 30, 60")
         if not self.symbols:

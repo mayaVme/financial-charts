@@ -75,8 +75,8 @@ class YFinanceFeed(MarketData):
         return resample(self._fetch(symbol, "7d"), interval_minutes)
 
 
-class KiteFeed(MarketData):
-    """Use Zerodha market data with the paper broker (real-time quotes, simulated orders)."""
+class BrokerFeed(MarketData):
+    """Use a real broker's market data with the paper broker (real-time quotes, simulated orders)."""
 
     def __init__(self, broker):
         self.broker = broker

@@ -59,22 +59,26 @@ def cmd_backtest(args, cfg) -> None:
         print(f"Trades written to {args.trades_out}")
 
 
-def _build_broker(cfg, live: bool):
+def _real_broker(cfg):
+    ex = cfg.execution
+    if cfg.broker == "dhan":
+        from .brokers.dhan import DhanBroker
+
+        return DhanBroker.from_env(exchange=ex.exchange, product=ex.product, tag=ex.order_tag,
+                                   security_ids=cfg.dhan_security_ids, cache_dir=cfg.log_dir)
     from .brokers.zerodha import ZerodhaBroker
 
+    return ZerodhaBroker.from_env(exchange=ex.exchange, product=ex.product, tag=ex.order_tag, algo_id=ex.algo_id)
+
+
+def _build_broker(cfg, live: bool):
     if live:
-        return ZerodhaBroker.from_env(exchange=cfg.execution.exchange, product=cfg.execution.product,
-                                    tag=cfg.execution.order_tag, algo_id=cfg.execution.algo_id)
+        return _real_broker(cfg)
 
     from .brokers.paper import PaperBroker
-    from .data.feeds import KiteFeed, YFinanceFeed
+    from .data.feeds import BrokerFeed, YFinanceFeed
 
-    if cfg.data_source == "kite":
-        feed = KiteFeed(ZerodhaBroker.from_env(exchange=cfg.execution.exchange))
-    elif cfg.data_source == "yfinance":
-        feed = YFinanceFeed()
-    else:
-        raise SystemExit(f"Unknown data_source {cfg.data_source!r} (use 'yfinance' or 'kite')")
+    feed = YFinanceFeed() if cfg.data_source == "yfinance" else BrokerFeed(_real_broker(cfg))
     return PaperBroker(feed, cfg.risk.capital, cfg.costs.slippage_pct)
 
 
@@ -88,7 +92,7 @@ def cmd_run(args, cfg, live: bool) -> None:
                 "Refusing to trade real money. Set `mode: live` in the config AND pass --i-accept-the-risk.\n"
                 "Paper trade first: python -m bot paper"
             )
-        print("*** LIVE TRADING WITH REAL MONEY. Ctrl+C to stop (broker-side stops stay in place). ***")
+        print(f"*** LIVE TRADING WITH REAL MONEY via {cfg.broker.upper()}. Ctrl+C to stop (broker-side stops stay in place). ***")
     else:
         cfg.mode = "paper"
     engine = TradingEngine(cfg, _build_broker(cfg, live), build_strategy(cfg.strategy))
@@ -101,6 +105,16 @@ def cmd_run(args, cfg, live: bool) -> None:
 
 
 def cmd_login(args, cfg) -> None:
+    if cfg.broker == "dhan":
+        print(
+            "Dhan access tokens are generated in the browser:\n"
+            "  1) Log in at https://web.dhan.co -> My Profile -> Access DhanHQ APIs\n"
+            "  2) Generate an access token (valid 24 hours) and note your Client ID\n"
+            "  3) Put DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env\n"
+            "  4) Register this machine's static IP in the same Dhan settings page"
+        )
+        return
+
     from .brokers.zerodha import exchange_request_token, login_url
 
     key, secret = os.environ.get("KITE_API_KEY"), os.environ.get("KITE_API_SECRET")
@@ -124,9 +138,9 @@ def main(argv=None) -> None:
     b.add_argument("--trades-out", help="Write trades to this CSV")
 
     sub.add_parser("paper", help="Paper trade with live prices, simulated orders")
-    lv = sub.add_parser("live", help="Trade real money via Zerodha Kite Connect")
+    lv = sub.add_parser("live", help="Trade real money via your broker (Dhan or Zerodha)")
     lv.add_argument("--i-accept-the-risk", action="store_true")
-    lg = sub.add_parser("login", help="Generate a Kite access token for today")
+    lg = sub.add_parser("login", help="Get today's broker access token")
     lg.add_argument("--request-token")
 
     args = ap.parse_args(argv)

@@ -1,14 +1,18 @@
 # Copy to config.yaml and edit. Every key is optional; defaults shown.
 
 mode: paper            # paper | live  (live also needs --i-accept-the-risk)
-broker: zerodha
-data_source: yfinance  # paper mode prices: yfinance (free, may lag) | kite (needs Kite credentials)
+broker: dhan           # dhan | zerodha
+data_source: yfinance  # paper mode prices: yfinance (free, may lag) | broker (real-time, needs broker credentials)
 
 symbols: [RELIANCE, INFY, HDFCBANK]   # NSE cash-market symbols, liquid large caps recommended
 interval_minutes: 5
 lookback_candles: 100
 poll_seconds: 15
 log_dir: logs
+
+# Dhan only: pin security IDs if the automatic scrip-master lookup can't find a symbol.
+# dhan_security_ids:
+#   INFY: 1594
 
 strategy:
   name: ema_rsi
@@ -44,13 +48,13 @@ session:                     # IST
 
 execution:
   exchange: NSE
-  product: MIS
+  product: MIS                # intraday (sent to Dhan as INTRADAY)
   limit_buffer_pct: 0.3       # marketable limit orders, not raw market orders
   stop_limit_buffer_pct: 1.0
   tick_size: 0.05
   fill_timeout_seconds: 20
   order_tag: algobot
-  algo_id: ""                 # set if your broker gives you an exchange algo ID
+  algo_id: ""                 # Zerodha only: exchange algo ID, if issued
 
 costs:                        # approximate intraday equity charges; used for P&L and backtests
   brokerage_pct: 0.03
